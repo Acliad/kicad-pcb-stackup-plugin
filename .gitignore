@@ -1,5 +1,9 @@
 # For reference only, don't save in repo
 docs/kicad-python
+docs/KiCad Addon Developers.html
+
+tests/
+.claude/
 
 # macOS system files
 .DS_Store
