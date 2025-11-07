@@ -1,0 +1,5 @@
+# For reference only, don't save in repo
+docs/kicad-python
+
+# macOS system files
+.DS_Store

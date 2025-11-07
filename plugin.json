@@ -1,0 +1,29 @@
+{
+    "$schema": "https://go.kicad.org/api/schemas/v1",
+    "identifier": "com.github.kicad-stackup-generator",
+    "name": "Stackup Table Generator",
+    "description": "Generate stackup table drawings on PCB documentation. Creates dynamic tables from board stackup settings with customizable styles and formatting.",
+    "version": "0.1.0",
+    "runtime": {
+        "type": "python",
+        "min_version": "3.9"
+    },
+    "actions": [
+        {
+            "identifier": "generate-stackup-table",
+            "name": "Generate Stackup Table",
+            "description": "Create a stackup table footprint from board settings",
+            "show-button": true,
+            "scopes": ["pcb"],
+            "entrypoint": "stackup_generator.py",
+            "icons-light": [
+                "icons/stackup_24.png",
+                "icons/stackup_48.png"
+            ],
+            "icons-dark": [
+                "icons/stackup_24.png",
+                "icons/stackup_48.png"
+            ]
+        }
+    ]
+}

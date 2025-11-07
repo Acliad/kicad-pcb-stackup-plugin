@@ -1,0 +1,2 @@
+# KiCad Python API bindings
+kicad-python>=0.2.0
