@@ -129,6 +129,15 @@ def create_parser() -> argparse.ArgumentParser:
         help="Spacing between copper hatch lines in mm (default: 1.0)"
     )
 
+    parser.add_argument(
+        "--scale",
+        type=float,
+        metavar="MM",
+        help="Desired total height of cross-section in mm. "
+             "All dimensions scale proportionally to achieve this height. "
+             "Default: uses base dimensions (varies by stackup and thickness mode)"
+    )
+
     # Export options
     parser.add_argument(
         "--export-json",
@@ -297,6 +306,7 @@ def main(argv: Optional[list] = None):
 
             # Configure graphical visualization
             graphics_config = GraphicalStackupConfig(
+                scale_mm=args.scale,  # None if not specified
                 thickness_mode=thickness_mode_map[args.thickness_mode],
                 # uniform_layer_height_mm uses DEFAULT_BASE_HEIGHT_MM by default
                 layer_width_mm=50.0,
@@ -306,26 +316,26 @@ def main(argv: Optional[list] = None):
                 leader_line_length_mm=20.0,
                 leader_line_width_mm=0.15,
                 text_size_mm=1.5,
-                min_callout_spacing_mm=8.0,
-                origin_x_mm=50.0,
-                origin_y_mm=50.0,
+                min_callout_spacing_mm=2.0,
+                origin_x_mm=0.0,  # Start at footprint origin for board rendering
+                origin_y_mm=0.0,  # Start at footprint origin for board rendering
             )
 
             # Calculate graphical layout
             print("\nCalculating graphical cross-section layout...")
-            graphics_layout = calculate_graphical_layout(stackup_data, graphics_config)
+            graphics_layout, effective_config = calculate_graphical_layout(stackup_data, graphics_config)
             print(f"✓ Visualization size: {graphics_layout.total_width_mm:.1f}mm × {graphics_layout.total_height_mm:.1f}mm")
             print(f"  - Layer count: {graphics_layout.layer_count}")
             print(f"  - Graphical elements: {len(graphics_layout.elements)}")
 
-            # Adjust leader lines for collision avoidance
+            # Adjust leader lines for collision avoidance (use effective_config which includes scaling)
             print("\nAdjusting leader lines for optimal spacing...")
-            graphics_layout = adjust_leader_lines(graphics_layout, graphics_config)
+            graphics_layout = adjust_leader_lines(graphics_layout, effective_config)
             print("✓ Leader lines optimized")
 
             # Export SVG if requested
             if args.export_svg:
-                svg_content = render_graphical_stackup_to_svg(graphics_layout, graphics_config)
+                svg_content = render_graphical_stackup_to_svg(graphics_layout, effective_config)
                 # If both modes, modify filename to differentiate
                 svg_filename = args.export_svg
                 if viz_mode == VisualizationMode.BOTH:
@@ -335,7 +345,7 @@ def main(argv: Optional[list] = None):
             # Render to board (unless dry run)
             if not args.dry_run:
                 print("\nRendering graphical stackup to board...")
-                graphics_footprint = render_graphical_stackup(board, graphics_layout, graphics_config)
+                graphics_footprint = render_graphical_stackup(board, graphics_layout, effective_config)
                 print("✓ Graphical stackup created successfully")
                 footprints_to_place.append(("graphical", graphics_footprint))
 

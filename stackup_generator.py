@@ -90,7 +90,7 @@ def main(visualization_mode: VisualizationMode = VisualizationMode.GRAPHICAL):
                 leader_line_length_mm=20.0,
                 leader_line_width_mm=0.15,
                 text_size_mm=1.5,
-                min_callout_spacing_mm=8.0,
+                min_callout_spacing_mm=2.0,
                 origin_x_mm=0.0,
                 origin_y_mm=0.0,
             )

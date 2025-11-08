@@ -1,667 +1,894 @@
-# Visual Enhancements for Graphical Stackup - Implementation Plan
+# Development Plans
 
-## Overview
-This document describes the implementation of visual enhancements to the KiCad stackup generator plugin's graphical cross-section mode. The enhancements add realistic visual representation of PCB stackups with proportional layer thickness, soldermask spacing, and copper hatching patterns.
+## 1️⃣ Scale Feature - ✅ COMPLETE
 
-## Requirements (User Specifications)
-1. **Soldermask Layer Spacing**: Soldermask layers should appear visually separated from other layers with a configurable gap
-2. **Copper Layer Hatching**: Copper layers should have 45-degree diagonal hatch lines for visual distinction
-3. **Proportional Layer Thickness**: Three thickness modes:
-   - **Uniform** (legacy): All layers same height
-   - **Proportional** (default): Fixed ratios - copper baseline (1.0x = 3.0mm), dielectric (1.55x = 4.65mm), soldermask (0.5x = 1.5mm)
-   - **Scaled**: Use actual thickness data from stackup, scaled to fit max height
-4. **CLI Control**: User-configurable via command-line arguments
-5. **Constants**: No magic numbers - all ratios defined as constants
+See bottom of this file for archived scale feature plan.
 
-## Implementation Summary
+---
 
-### 1. Configuration Models (`stackup/core/graphics_models.py`)
-**Status**: ✅ Completed
+## 2️⃣ Fix Text Spacing at Small Scales - ✅ COMPLETE
 
-**Changes**:
-- Added module-level constants (no magic numbers):
-  - `COPPER_HEIGHT_RATIO = 1.0` - Copper is always the baseline
-  - `DIELECTRIC_HEIGHT_RATIO = 1.55` - 1.55x copper thickness
-  - `SOLDERMASK_HEIGHT_RATIO = 0.5` - Thin soldermask layer
-  - `DEFAULT_BASE_HEIGHT_MM = 3.0` - Base height for proportional mode (copper = 3.0mm)
-  - `CALLOUT_TEXT_PADDING_MM = 1.1` - Padding between leader line endpoint and text label
-- Added `ThicknessMode` enum with three modes: `UNIFORM`, `PROPORTIONAL`, `SCALED`
-- Extended `GraphicalStackupConfig` dataclass with:
-  - `thickness_mode`: Controls layer height calculation (default: PROPORTIONAL)
-  - `uniform_layer_height_mm`: Base height (defaults to `DEFAULT_BASE_HEIGHT_MM`)
-  - Ratio fields use constants: `copper_height_ratio=COPPER_HEIGHT_RATIO`, etc.
-  - `max_total_height_mm`: Max height constraint for scaled mode (100mm default)
-  - `soldermask_gap_mm`: Gap spacing above/below soldermask layers (1.0mm default)
-  - `copper_hatch_enabled`: Enable/disable copper hatching (True default)
-  - `copper_hatch_spacing_mm`: Distance between hatch lines (1.0mm default)
-  - `copper_hatch_angle_deg`: Angle of hatch lines (45° default)
-- Extended `LayerRectangle` to store `layer_type` for rendering decisions
+See bottom of this file for archived text spacing fix plan.
 
-**Architecture**: Copper is always 1.0 baseline; adjust base height (3.0mm) instead of copper ratio
+---
 
-### 2. CLI Interface (`stackup/cli/main.py`)
-**Status**: ✅ Completed
+## 3️⃣ Fix Callout Horizontal Spacing with Aligned Text Column - READY TO IMPLEMENT
 
-**Changes**:
-- Added `--thickness-mode` argument: choices `[uniform, proportional, scaled]`, default `proportional`
-- Added `--no-copper-hatch` flag: Disable hatching on copper layers
-- Added `--soldermask-gap` argument: Custom gap size in mm (default: 1.0)
-- Added `--copper-hatch-spacing` argument: Hatch line density in mm (default: 1.0)
-- Imported `ThicknessMode` enum and mapped CLI string args to enum values
-- Updated graphical config instantiation to pass new parameters
+### Problem Summary
 
-**Example Usage**:
-```bash
-# Default proportional mode with hatching
-python -m stackup.cli.main --visualization graphical
+When many callouts require large vertical displacements, their 45° elbows consume most of the horizontal space budget (fixed at 20mm via `leader_line_length_mm`), causing the elbows to bunch together horizontally. While vertical spacing between callouts was recently fixed, horizontal spacing between elbow endpoints can still be problematically tight.
 
-# Uniform thickness (legacy behavior)
-python -m stackup.cli.main --visualization graphical --thickness-mode uniform
+**Visual Example** (from user's screenshot):
+```
+Current behavior (fixed 20mm horizontal):
 
-# Scaled mode with custom gap
-python -m stackup.cli.main --visualization graphical --thickness-mode scaled --soldermask-gap 2.0
+SOLDERMASK — 20.0µm ±2.0µm
+    ╱
+COPPER — 35.0µm ±3.5µm
+  ╱
+DIELECTRIC — 100.0µm ±10.0µm
+ ╱
+COPPER — 35.0µm ±3.5µm
+╱
+[stackup rectangle]
 
-# Disable copper hatching
-python -m stackup.cli.main --visualization graphical --no-copper-hatch
+Problem: Elbows are very close horizontally (2-3mm apart),
+creating visual crowding despite correct vertical spacing.
 ```
 
-### 3. Layer Height Calculation (`stackup/core/graphics_layout.py`)
-**Status**: ✅ Completed
+**Root Cause**:
+- `leader_line_length_mm` is **fixed at 20.0mm** (default)
+- For 45° elbows: `horizontal_budget = 20mm - initial_segment - diagonal_length`
+- As `diagonal_length` increases (large vertical displacement), `remaining_horizontal` decreases
+- Text moves **closer** to the graphic when elbows are large
+- Result: Elbows bunch together horizontally
 
-**Changes**:
-- Created `_calculate_layer_heights()` helper function:
-  - **Uniform mode**: Returns list of uniform heights
-  - **Proportional mode**: Applies fixed ratios based on layer type
-  - **Scaled mode**: Calculates actual thickness ratios, scales to fit max height
-- Updated `calculate_graphical_layout()`:
-  - Calls `_calculate_layer_heights()` instead of using uniform height directly
-  - Uses per-layer height from calculated list
-  - Stores `layer_type` in `LayerRectangle` for downstream rendering
-- Updated `adjust_leader_lines()`:
-  - Reads actual rectangle height instead of assuming uniform
-  - Handles variable layer heights in collision detection and adjustment
-
-### 4. Soldermask Gap Spacing (`stackup/core/graphics_layout.py`)
-**Status**: ✅ Completed
-
-**Changes**:
-- Modified `calculate_graphical_layout()` to insert gaps:
-  - Before soldermask layer: `y_offset += config.soldermask_gap_mm`
-  - After soldermask layer: `y_offset += config.soldermask_gap_mm`
-- Gap is only added if `config.soldermask_gap_mm > 0`
-- Total height calculation accounts for gaps
-
-**Visual Result**:
-```
-[Other layers]
-    <-- Gap (1mm) -->
-[Soldermask - thin]
-    <-- Gap (1mm) -->
-[Copper]
-```
-
-### 5. Copper Hatching Renderer (`stackup/kicad_adapter/graphics_renderer.py`)
-**Status**: ✅ Completed
-
-**Changes**:
-- Created `_generate_hatch_lines()` function:
-  - Generates 45-degree diagonal lines across rectangle bounds
-  - Configurable spacing between lines
-  - Supports arbitrary angles (extensible for future)
-- Created `_clip_line_to_rect()` helper:
-  - Cohen-Sutherland line clipping algorithm
-  - Clips hatch lines to rectangle boundaries for clean rendering
-- Modified `_add_rectangle()`:
-  - Checks if layer is copper: `rect.layer_type == LayerType.COPPER.value`
-  - If copper and hatching enabled, generates hatch lines
-  - Adds each hatch line as `BoardSegment` primitive
-- Updated `render_graphical_stackup_to_svg()`:
-  - Added hatching support to SVG export for consistency
-
-**Rendering Flow**:
-```
-For each LayerRectangle:
-  1. Draw rectangle border (BoardRectangle)
-  2. If copper layer and hatching enabled:
-     a. Generate hatch line coordinates
-     b. Clip lines to rectangle bounds
-     c. Draw each line as BoardSegment
-```
-
-### 6. Unit Tests (`tests/test_graphics_layout.py`)
-**Status**: ✅ Completed (34 tests passing)
-
-**New Test Coverage**:
-- `TestThicknessModes` class:
-  - `test_uniform_thickness_mode`: All layers same height
-  - `test_proportional_thickness_mode`: Fixed ratios applied correctly
-  - `test_scaled_thickness_mode`: Actual thickness scaled to max height
-  - `test_calculate_layer_heights_uniform`: Helper function with uniform mode
-  - `test_calculate_layer_heights_proportional`: Helper with proportional mode
-- `TestSoldermaskGapSpacing` class:
-  - `test_soldermask_gap_disabled`: No gaps when set to 0
-  - `test_soldermask_gap_enabled`: Total height includes gaps
-  - `test_soldermask_rectangles_have_gaps`: Rectangle positions account for gaps
-- `TestLayerTypeStorage` class:
-  - `test_layer_type_stored_in_rectangles`: Layer type propagated to rectangles
-  - `test_copper_layers_identified`: Copper layers identifiable for hatching
-  - `test_soldermask_layers_identified`: Soldermask layers identifiable for gaps
-
-**Updated Tests**:
-- Fixed existing tests to explicitly set `thickness_mode=ThicknessMode.UNIFORM` (since default changed to PROPORTIONAL)
-
-## Architecture Decisions
-
-### 1. Separation of Concerns
-- **Core layer** (`graphics_layout.py`): Pure business logic, no KiCad dependencies
-- **Adapter layer** (`graphics_renderer.py`): KiCad-specific rendering code
-- **Models** (`graphics_models.py`): Data structures shared between layers
-
-### 2. Constants Over Magic Numbers
-- All ratios defined as module-level constants: `COPPER_HEIGHT_RATIO`, `DIELECTRIC_HEIGHT_RATIO`, `SOLDERMASK_HEIGHT_RATIO`
-- Default base height as constant: `DEFAULT_BASE_HEIGHT_MM`
-- Makes code self-documenting and maintainable
-- Easy to adjust all values from one location
-
-### 3. Copper as Baseline (1.0)
-- **Design principle**: Copper thickness is always the reference (ratio = 1.0)
-- To adjust visual size: change `DEFAULT_BASE_HEIGHT_MM` (3.0mm), NOT copper ratio
-- Other layers scale relative to copper baseline
-- Example: dielectric = 1.55x copper means 1.55 × 3.0mm = 4.65mm
-- **Benefit**: Intuitive ratios - "dielectric is 1.55x copper" is clearer than arbitrary fractional ratios
-
-### 4. Backward Compatibility
-- Added `ThicknessMode.UNIFORM` to preserve legacy behavior
-- All new config parameters have sensible defaults
-- Existing tests updated, but old behavior still accessible
-
-### 5. Extensibility
-- Hatch pattern generator supports arbitrary angles (not just 45°)
-- Gap spacing can be applied to any layer type (not just soldermask)
-- Ratios are configurable via config object
-
-### 6. Testability
-- Pure functions in core layer → easy to unit test
-- Mock data fixtures for different stackup types
-- Tests use constants instead of hardcoded values
-- Tests verify both visual calculations and integration
-
-## Before & After Comparison
-
-### Before
-```
-All layers uniform height (5mm):
-┌─────────────────┐
-│   F.Cu (5mm)    │
-├─────────────────┤
-│   Core (5mm)    │
-├─────────────────┤
-│   B.Cu (5mm)    │
-└─────────────────┘
-```
-
-### After (Proportional Mode)
-```
-Realistic proportions + gaps + hatching (with 3.0mm copper):
-     <-- Gap -->
-┌─────────────────┐ Soldermask (1.5mm = 0.5 × 3.0)
-│   F.Mask        │
-└─────────────────┘
-     <-- Gap -->
-┌─────────────────┐ Copper (3.0mm = 1.0 × 3.0)
-│ / F.Cu / / / /  │ ← Hatched
-└─────────────────┘
-┌─────────────────┐ Dielectric (4.65mm = 1.55 × 3.0)
-│      Core       │
-└─────────────────┘
-┌─────────────────┐ Copper (3.0mm = 1.0 × 3.0)
-│ / B.Cu / / / /  │ ← Hatched
-└─────────────────┘
-     <-- Gap -->
-┌─────────────────┐ Soldermask (1.5mm = 0.5 × 3.0)
-│   B.Mask        │
-└─────────────────┘
-     <-- Gap -->
-```
-
-## Technical Details
-
-### Thickness Mode Calculations
-
-#### Uniform Mode
+**Key Code Location**: `stackup/core/graphics_layout.py:589`
 ```python
-heights = [config.uniform_layer_height_mm] * len(layers)
+remaining_horizontal = config.leader_line_length_mm - horizontal_len - angle_len
+# ↑ As angle_len grows, remaining_horizontal shrinks → text moves left → crowding
 ```
 
-#### Proportional Mode
+### Design Decision: Aligned Text Column Approach
+
+After discussion with user, selected approach: **Calculate maximum required leader length across all callouts, then use that length uniformly to create a clean, aligned text column.**
+
+**Why This Approach**:
+- ✅ Professional, clean appearance
+- ✅ Text alignment makes reading easier
+- ✅ All callouts get same horizontal space
+- ✅ Naturally scales with vertical displacement needs
+- ✅ No new configuration parameters needed (smart defaults)
+- ✅ Preserves existing 45° elbow constraint logic
+
+**Alternative Approaches Considered**:
+1. **Ragged (variable X)**: Each callout extends just enough based on its vertical displacement
+   - ❌ Text at different X positions looks unorganized
+   - ✅ Minimal horizontal space usage
+
+2. **Minimum guaranteed spacing**: Add horizontal gap enforcement between elbow endpoints
+   - ❌ Complex collision detection in 2D
+   - ❌ More complicated algorithm
+   - ✅ Only extends where needed
+
+### Architecture Analysis
+
+#### Current Leader Line Calculation Flow
+
+```
+adjust_leader_lines(layout, config)
+    ↓
+For each callout:
+    ↓
+    Is vertical displacement < min_elbow_height_mm?
+        YES → _create_straight_leader_line()
+              • Simple horizontal line
+              • Length = config.leader_line_length_mm (FIXED)
+        NO  → _create_elbow_leader_line()
+              • Three segments: horizontal + diagonal + horizontal
+              • Total length = config.leader_line_length_mm (FIXED)
+              • Distribution:
+                - Initial horizontal: 40% of total
+                - Diagonal: 45° angle (horizontal = vertical displacement)
+                - Final horizontal: remaining budget
+              • Problem: Final horizontal can be very short!
+```
+
+**Current Implementation** (`graphics_layout.py:574-609`):
 ```python
-# Constants defined at module level (no magic numbers)
-COPPER_HEIGHT_RATIO = 1.0      # Baseline
-DIELECTRIC_HEIGHT_RATIO = 1.55  # 1.55x copper
-SOLDERMASK_HEIGHT_RATIO = 0.5   # Thin layer
-DEFAULT_BASE_HEIGHT_MM = 3.0    # Base height (copper = 3.0mm)
-
-# Calculation
-for layer in layers:
-    if layer.type == COPPER:
-        height = base_height * COPPER_HEIGHT_RATIO  # 3.0mm (1.0 × 3.0)
-    elif layer.type == DIELECTRIC:
-        height = base_height * DIELECTRIC_HEIGHT_RATIO  # 4.65mm (1.55 × 3.0)
-    elif layer.type == SOLDERMASK:
-        height = base_height * SOLDERMASK_HEIGHT_RATIO  # 1.5mm (0.5 × 3.0)
-```
-
-#### Scaled Mode
-```python
-scale_factor = max_height / total_actual_thickness
-heights = [layer.thickness * scale_factor for layer in layers]
-```
-
-### Hatch Pattern Algorithm
-
-1. **Calculate coverage area**: `diagonal = sqrt(width² + height²)`
-2. **Determine line count**: `num_lines = diagonal / spacing + 2`
-3. **Generate parallel lines** at 45° offset by `i * spacing`
-4. **Clip to rectangle bounds** using Cohen-Sutherland algorithm
-5. **Render as segments**: Each clipped line → `BoardSegment`
-
-### Gap Insertion Logic
-```python
-for idx, layer in enumerate(layers):
-    if layer.type == SOLDERMASK:
-        y_offset += gap_mm  # Before
-
-    draw_rectangle(y_offset, height)
-    y_offset += height
-
-    if layer.type == SOLDERMASK:
-        y_offset += gap_mm  # After
-```
-
-## Performance Considerations
-
-- **Hatch line generation**: O(n) where n = diagonal/spacing (~50 lines for typical PCB)
-- **Line clipping**: O(1) per line (Cohen-Sutherland iterative algorithm)
-- **Layout calculation**: O(m) where m = layer count (typically <20 layers)
-- **Overall complexity**: Linear, no performance concerns for typical stackups
-
-## Future Enhancements (Out of Scope)
-
-1. **Cross-hatching**: Add perpendicular hatch lines for denser pattern
-2. **Custom layer colors**: Color-code layers by type (green soldermask, copper color, etc.)
-3. **Layer labels**: Overlay text directly on layers
-4. **3D extrusion**: Export to 3D format for visualization
-5. **Interactive mode**: Click layers to see properties
-
-## Testing Strategy
-
-### Unit Tests (No KiCad Required)
-- Pure business logic in `graphics_layout.py`
-- Mock data with `StackupData` fixtures
-- Test each mode independently
-- Test edge cases (single layer, empty stackup, etc.)
-
-### Integration Tests (Future - Requires KiCad)
-- Full rendering pipeline with real KiCad board
-- Verify footprint creation on board
-- Test interactive placement
-- SVG export validation
-
-## Files Modified
-
-1. ✅ `stackup/core/graphics_models.py` - Data models and config
-2. ✅ `stackup/cli/main.py` - CLI argument parsing
-3. ✅ `stackup/core/graphics_layout.py` - Layout algorithms
-4. ✅ `stackup/kicad_adapter/graphics_renderer.py` - KiCad rendering
-5. ✅ `tests/test_graphics_layout.py` - Unit tests
-
-## Validation
-
-### Test Results
-```
-34 tests passed in 0.06s
-- 23 existing tests (updated for new default)
-- 11 new tests for visual features
-```
-
-### Code Quality
-- Type hints throughout
-- Comprehensive docstrings
-- Pure functions where possible
-- No KiCad dependencies in core layer
-
-## Final Configuration Summary
-
-### Default Visual Proportions (Proportional Mode)
-With `DEFAULT_BASE_HEIGHT_MM = 3.0`:
-
-| Layer Type   | Ratio Constant              | Calculated Height | Visual Appearance |
-|--------------|-----------------------------|--------------------|-------------------|
-| Copper       | `COPPER_HEIGHT_RATIO = 1.0` | 3.0mm (1.0 × 3.0) | Baseline with 45° hatching |
-| Dielectric   | `DIELECTRIC_HEIGHT_RATIO = 1.55` | 4.65mm (1.55 × 3.0) | 1.55x thicker than copper |
-| Soldermask   | `SOLDERMASK_HEIGHT_RATIO = 0.5` | 1.5mm (0.5 × 3.0) | Thin layer with 1mm gaps above/below |
-
-**Key Design Points**:
-- Copper is always the baseline (1.0) at 3.0mm - adjust `DEFAULT_BASE_HEIGHT_MM` to change all proportional sizes
-- No magic numbers - all values defined as constants at module level
-- Ratios are intuitive: "dielectric is 1.55x copper thickness", "soldermask is 0.5x (half)"
-- Soldermask appears thin and visually separated with gaps
-
-## Intelligent Elbow Generation (Enhancement)
-
-### Problem
-Small elbows (< 0.5mm vertical displacement) in leader lines look silly and unprofessional. When layers are closely spaced, the collision avoidance algorithm would create tiny elbows that are visually unappealing.
-
-### Solution: Smart Elbow Size Management
-**Status**: ✅ Completed (December 2024)
-
-**Implementation Strategy**:
-1. **Elbow size threshold**: MIN_ELBOW_HEIGHT_MM = 0.5mm
-2. **Decision logic**: If calculated elbow height < 0.5mm → use straight line, else → use elbow
-3. **Spacing enforcement**: When callouts are too close AND would create small elbows → increase spacing to force minimum 0.5mm elbow
-
-### Technical Implementation
-
-#### 1. New Constant (`stackup/core/graphics_models.py:27`)
-```python
-MIN_ELBOW_HEIGHT_MM = 0.5  # Elbows with less than 0.5mm vertical displacement become straight lines
-```
-
-#### 2. Configuration Field (`stackup/core/graphics_models.py:128`)
-```python
-min_elbow_height_mm: float = MIN_ELBOW_HEIGHT_MM  # Minimum elbow height threshold
-```
-
-#### 3. Helper Functions (`stackup/core/graphics_layout.py`)
-
-**`_calculate_elbow_heights()` (lines 244-270)**
-- Calculates vertical displacement for each proposed leader line adjustment
-- Returns list of elbow heights (one per adjusted leader)
-
-**`_should_use_straight_line()` (lines 273-284)**
-- Decision function: elbow_height < min_elbow_height_mm → straight line
-- Centralizes threshold comparison logic
-
-**`_adjust_spacing_for_minimum_elbows()` (lines 287-328)**
-- Enforces minimum elbow height by adjusting callout positions
-- If elbow < threshold: push callout to create minimum displacement
-- Direction-aware: pushes up or down based on which side of layer center
-
-#### 4. Updated Algorithm Flow (`adjust_leader_lines()`, lines 331-497)
-
-**Before**:
-```
-1. Detect collisions
-2. Calculate even distribution of callouts
-3. Create elbows for all adjusted leaders
-```
-
-**After (intelligent)**:
-```
-1. Detect collisions
-2. Calculate even distribution of callouts
-3. Calculate elbow heights for proposed positions
-4. Adjust spacing to enforce minimum elbow heights
-5. Recalculate elbow heights after adjustment
-6. For each leader:
-   - If elbow < 0.5mm: Create straight line (STRAIGHT style)
-   - Else: Create elbow (ANGLED_UP or ANGLED_DOWN style)
-```
-
-### Visual Examples
-
-**Before (with tiny elbows)**:
-```
-Layer 1 ──────┐╱  ← 0.2mm elbow (looks silly)
-Layer 2 ──────┘   Text
-```
-
-**After (intelligent - straight lines)**:
-```
-Layer 1 ───────── Text (straight, clean)
-Layer 2 ───────── Text (straight, clean)
-```
-
-**After (intelligent - enforced minimum)**:
-```
-Layer 1 ──────┐
-              │  ← 0.5mm+ elbow (looks professional)
-              └── Text
-```
-
-### Test Coverage
-
-**New Test Class**: `TestIntelligentElbowGeneration` (7 tests)
-- `test_min_elbow_height_constant_used`: Verify constant is respected
-- `test_should_use_straight_line_logic`: Test decision function threshold
-- `test_elbow_height_calculation`: Test displacement calculation helper
-- `test_adjust_spacing_for_minimum_elbows`: Test enforcement logic
-- `test_small_elbows_become_straight`: Verify < 0.5mm → straight
-- `test_large_elbows_remain_elbows`: Verify >= 0.5mm → elbow
-- `test_minimum_elbow_enforcement`: Verify spacing adjustment works end-to-end
-
-**Test Results**: 89 tests passing (82 existing + 7 new)
-
-### Files Modified
-
-1. ✅ `stackup/core/graphics_models.py`:
-   - Added MIN_ELBOW_HEIGHT_MM constant
-   - Added min_elbow_height_mm field to GraphicalStackupConfig
-
-2. ✅ `stackup/core/graphics_layout.py`:
-   - Added _calculate_elbow_heights() helper
-   - Added _should_use_straight_line() helper
-   - Added _adjust_spacing_for_minimum_elbows() helper
-   - Updated adjust_leader_lines() to use intelligent elbow logic
-   - Added straight line creation path in adjustment loop
-
-3. ✅ `tests/test_graphics_layout.py`:
-   - Added TestIntelligentElbowGeneration class with 7 tests
-   - Updated imports to include new constants and helpers
-
-### Benefits
-
-1. **Professional appearance**: No more silly-looking tiny elbows
-2. **Automatic optimization**: Algorithm decides straight vs elbow based on size
-3. **Configurable threshold**: min_elbow_height_mm can be adjusted per use case
-4. **Clean visual hierarchy**: Leader lines are either clearly straight or clearly angled
-5. **Maintained compatibility**: Existing layouts work unchanged (default 0.5mm threshold)
-
-## Symmetric Elbow Spacing (Enhancement)
-
-### Problem
-The original intelligent elbow generation used linear distribution (top to bottom), which created asymmetric layouts. This looked unbalanced. Professional technical drawings should have symmetric, visually balanced leader lines.
-
-### Solution: Symmetric Distribution from Center Layer
-**Status**: ✅ Completed (December 2024)
-
-**Implementation Strategy**:
-1. **Find center layer**: `center_idx = total_groups // 2`
-2. **Center layer gets 0 displacement**: Always straight line (visual anchor)
-3. **Symmetric spacing**: Layers above/below center mirror each other
-4. **Consistent spacing**: Always use `MIN_ELBOW_HEIGHT_MM` (0.5mm) as unit
-5. **Perfect balance**: `displacement[center - n] = -displacement[center + n]`
-
-### Visual Comparison
-
-**Before (Linear Distribution)**:
-```
-L1: 0% of available height   ─────────  Text (top)
-L2: 25%                       ───┐ ╱    Text
-L3: 50%                       ─────┐ ╱  Text
-L4: 75%                       ───────┐ ╱ Text
-L5: 100%                      ─────────┘ Text (bottom)
-```
-**Result**: Asymmetric, unbalanced appearance
-
-**After (Symmetric from Center)**:
-```
-L1: -1.0mm from center  ────┐ ╱      Text (up 1.0mm)
-L2: -0.5mm from center  ──┐ ╱        Text (up 0.5mm)
-L3:  0.0mm (CENTER)     ─────        Text (STRAIGHT)
-L4: +0.5mm from center  ──┘ ╲        Text (down 0.5mm) ← mirrors L2
-L5: +1.0mm from center  ────┘ ╲      Text (down 1.0mm) ← mirrors L1
-```
-**Result**: Symmetric, balanced, professional
-
-### Technical Implementation
-
-#### New Helper Function: `_calculate_symmetric_positions()`
-
-**Location**: `stackup/core/graphics_layout.py`, lines 331-389
-
-**Algorithm**:
-```python
-center_idx = total_groups // 2
-spacing_unit = config.min_elbow_height_mm  # 0.5mm default
-
-for i in range(total_groups):
-    if i == center_idx:
-        displacement = 0.0  # Center layer: straight
-    elif i < center_idx:
-        units_from_center = center_idx - i
-        displacement = -units_from_center * spacing_unit  # Above: negative (up)
+def _create_elbow_leader_line(...):
+    # Direction based on which side of center
+    if new_callout_y > rect_center_y:
+        style = LeaderLineStyle.ANGLED_DOWN
     else:
-        units_from_center = i - center_idx
-        displacement = units_from_center * spacing_unit  # Below: positive (down)
+        style = LeaderLineStyle.ANGLED_UP
+
+    # Fixed distribution
+    horizontal_len = config.leader_line_length_mm * 0.4  # 40% initial
+    angle_len = abs(new_callout_y - rect_center_y)       # 45° diagonal
+    remaining_horizontal = config.leader_line_length_mm - horizontal_len - angle_len
+    #                      ↑ PROBLEM: Can be very small or even negative!
+
+    # Create three segments
+    segments = [
+        Segment(start, horizontal_end),     # Initial horizontal
+        Segment(horizontal_end, elbow_end), # 45° diagonal
+        Segment(elbow_end, final_end)       # Final horizontal (may be tiny!)
+    ]
 ```
 
-**Key Features**:
-- Center is always index `total_groups // 2`
-- Displacement is always a multiple of `MIN_ELBOW_HEIGHT_MM`
-- Layers equidistant from center have equal but opposite displacements
-- No dependency on available height - purely symmetric
+#### Where Dimensions Are Used
 
-#### Updated `adjust_leader_lines()` Flow
-
-**Before**:
+**Config Definition** (`stackup/core/graphics_models.py:124`):
 ```python
-# Linear distribution across available height
-for i in range(total_groups):
-    fraction = i / (total_groups - 1)
-    new_y = first_rect_y + (available_height * fraction)
-
-# Then enforce minimum spacing
-new_positions = _adjust_spacing_for_minimum_elbows(...)
+leader_line_length_mm: float = 20.0  # Fixed horizontal distance from layer edge to text
 ```
 
-**After (simplified)**:
+**Layout Calculation** (`stackup/core/graphics_layout.py`):
+- Line 211: Initial straight leader lines created with fixed length
+- Lines 551-573: Straight leader lines (replacement) use fixed length
+- Lines 574-609: Elbow leader lines use fixed length for total budget
+- Line 236: Initial text X position = `layer_edge_x + config.leader_line_length_mm`
+
+### Solution Design
+
+#### Core Concept: Dynamic Maximum Leader Length
+
+Calculate the **maximum leader length needed** across all callouts based on their vertical displacements, then use this length uniformly for all callouts.
+
+**Formula**:
+```
+For each callout:
+    vertical_displacement = abs(new_callout_y - rect_center_y)
+
+    If vertical_displacement < min_elbow_height_mm:
+        required_length = base_leader_length  # Straight line
+    Else:
+        # Elbow line needs: initial + diagonal + comfortable final segment
+        initial_segment = base_leader_length * 0.4
+        diagonal_segment = vertical_displacement  # 45° means horizontal = vertical
+        min_final_segment = 5.0  # Comfortable space for final horizontal (new constant)
+        required_length = initial_segment + diagonal_segment + min_final_segment
+
+max_leader_length = max(required_length for all callouts)
+effective_leader_length = max(max_leader_length, config.leader_line_length_mm)
+```
+
+**Result**: All callouts use `effective_leader_length`, ensuring:
+- Text aligns in a clean vertical column
+- All elbows have comfortable horizontal spacing
+- Never shorter than configured minimum
+- Automatically scales with vertical displacement needs
+
+#### Implementation Strategy
+
+**Phase 1: Add Helper Function**
+
+Create new function to calculate required leader length for a given vertical displacement.
+
+**Location**: `stackup/core/graphics_layout.py` (around line 520, before `adjust_leader_lines`)
+
 ```python
-# Calculate symmetric positions (already has minimum spacing built-in)
-new_positions = _calculate_symmetric_positions(groups_to_adjust, elements, config)
+def _calculate_required_leader_length(
+    vertical_displacement: float,
+    base_leader_length: float,
+    min_elbow_height: float,
+    min_final_segment: float = 5.0
+) -> float:
+    """
+    Calculate the leader line length required for a callout with given vertical displacement.
 
-# Calculate elbow heights
-elbow_heights = _calculate_elbow_heights(groups_to_adjust, new_positions, elements, config)
+    For straight lines (displacement < min_elbow_height), returns base length.
+    For elbow lines, calculates total length needed for:
+      - Initial horizontal segment (40% of base)
+      - 45° diagonal segment (length = vertical displacement)
+      - Comfortable final horizontal segment (min_final_segment)
 
-# Create leaders (straight for center, elbows for others)
+    Args:
+        vertical_displacement: Absolute vertical distance from layer center to callout position
+        base_leader_length: Base leader line length from config (20.0mm default)
+        min_elbow_height: Minimum vertical displacement to create elbow (0.5mm default)
+        min_final_segment: Minimum comfortable horizontal space after elbow (5.0mm default)
+
+    Returns:
+        Required leader line length in mm
+    """
+    if vertical_displacement < min_elbow_height:
+        # Straight line - just use base length
+        return base_leader_length
+    else:
+        # Elbow line - need space for all three segments
+        initial_horizontal = base_leader_length * 0.4
+        diagonal = vertical_displacement  # 45° angle: horizontal = vertical
+        final_horizontal = min_final_segment
+        return initial_horizontal + diagonal + final_horizontal
 ```
 
-**Simplification**: Removed `_adjust_spacing_for_minimum_elbows()` call - no longer needed since symmetric positioning inherently enforces minimum spacing.
+**Why This Works**:
+- Straight lines: No extra space needed beyond base
+- Elbow lines: Guarantees comfortable final segment regardless of diagonal length
+- Preserves 40% initial segment distribution from current implementation
+- New constant `min_final_segment` (5.0mm) ensures readable spacing
 
-### Examples
+**Phase 2: Modify `adjust_leader_lines()`**
 
-#### Example 1: 5 Layers (Typical PCB - F.Cu, In1.Cu, In2.Cu, In3.Cu, B.Cu)
+**Step 2.1**: Calculate maximum leader length before processing callouts
 
-**Center**: Index 2 (In2.Cu)
+**Location**: `stackup/core/graphics_layout.py:528` (start of `adjust_leader_lines` function)
 
-**Displacements** (0.5mm unit):
-```
-L0 (F.Cu):   -1.0mm  (2 units up)
-L1 (In1.Cu): -0.5mm  (1 unit up)
-L2 (In2.Cu):  0.0mm  (CENTER - straight)
-L3 (In3.Cu): +0.5mm  (1 unit down) ← mirrors L1
-L4 (B.Cu):   +1.0mm  (2 units down) ← mirrors L0
-```
-
-**Perfect mirror symmetry**: L0 ↔ L4, L1 ↔ L3, L2 = center
-
-#### Example 2: 7 Layers (High-density PCB)
-
-**Center**: Index 3
-
-**Displacements** (0.5mm unit):
-```
-L0: -1.5mm  (3 units up)
-L1: -1.0mm  (2 units up)
-L2: -0.5mm  (1 unit up)
-L3:  0.0mm  (CENTER - straight)
-L4: +0.5mm  (1 unit down) ← mirrors L2
-L5: +1.0mm  (2 units down) ← mirrors L1
-L6: +1.5mm  (3 units down) ← mirrors L0
+**Current code**:
+```python
+def adjust_leader_lines(
+    layout: GraphicalStackupLayout, config: GraphicalStackupConfig
+) -> GraphicalStackupLayout:
+    """Adjust leader lines to avoid overlapping callouts using symmetric spreading."""
+    # Existing collision detection and grouping...
+    has_collisions = True
+    iteration = 0
+    max_iterations = 50
 ```
 
-**Perfect 3-way mirror symmetry**
+**New code** (insert after docstring, before main loop):
+```python
+def adjust_leader_lines(
+    layout: GraphicalStackupLayout, config: GraphicalStackupConfig
+) -> GraphicalStackupLayout:
+    """Adjust leader lines to avoid overlapping callouts using symmetric spreading."""
 
-#### Example 3: 3 Layers (Simple 2-layer PCB with ground plane)
+    # PHASE 2.1: Calculate maximum required leader length across all callouts
+    # This ensures all text aligns at the same X position (aligned column)
 
-**Center**: Index 1
+    # Find the stackup rectangle center Y for displacement calculations
+    if not layout.elements:
+        # No elements, just return as-is
+        return layout
 
-**Displacements**:
+    # Assume first element is main stackup rectangle (established pattern in codebase)
+    rect_center_y = layout.elements[0].center_y  # Center of stackup rectangle
+
+    # Scan all current callout positions to find maximum displacement
+    max_required_length = config.leader_line_length_mm  # Start with configured minimum
+
+    for callout in layout.callouts:
+        vertical_displacement = abs(callout.position_y - rect_center_y)
+        required_length = _calculate_required_leader_length(
+            vertical_displacement,
+            config.leader_line_length_mm,
+            config.min_elbow_height_mm,
+            min_final_segment=5.0  # New constant for comfortable final spacing
+        )
+        max_required_length = max(max_required_length, required_length)
+
+    # Create effective config with adjusted leader length
+    effective_config = config.model_copy()
+    effective_config.leader_line_length_mm = max_required_length
+
+    # Use effective_config for all subsequent operations
+    # (Continue with existing collision detection logic, but use effective_config)
+
+    has_collisions = True
+    iteration = 0
+    max_iterations = 50
 ```
-L0: -0.5mm  (1 unit up)
-L1:  0.0mm  (CENTER - straight)
-L2: +0.5mm  (1 unit down) ← mirrors L0
+
+**Step 2.2**: Update leader line creation calls to use `effective_config`
+
+**Locations**: Throughout `adjust_leader_lines` function
+
+**Changes**:
+1. Line ~551-573 (straight line creation): Change `config` to `effective_config`
+2. Line ~574-609 (elbow line creation): Change `config` to `effective_config`
+3. All other references to `config` within loop: Change to `effective_config`
+
+**Note**: Keep original `config` parameter for collision detection thresholds, but use `effective_config` for dimensional calculations.
+
+**Step 2.3**: Update collision detection to use effective config
+
+**Location**: Line ~529 (collision detection call)
+
+```python
+# Before:
+collision_mask = detect_callout_collisions(layout, config)
+
+# After:
+collision_mask = detect_callout_collisions(layout, effective_config)
 ```
 
-**Minimal symmetric layout**
+**Step 2.4**: Add debug logging (optional, for verification)
 
-### Test Coverage
+```python
+# After calculating max_required_length:
+if max_required_length > config.leader_line_length_mm:
+    # Length was extended - log for debugging
+    print(f"DEBUG: Extended leader length from {config.leader_line_length_mm:.1f}mm "
+          f"to {max_required_length:.1f}mm for aligned text column")
+```
 
-**New Test Class**: `TestSymmetricElbowSpacing` (4 tests)
-- `test_symmetric_spacing_odd_layers_five`: Verify 5-layer symmetry
-- `test_symmetric_spacing_center_is_straight`: Center always straight (3, 5, 7 layers)
-- `test_symmetric_spacing_mirrors`: Verify mirror symmetry for 7-layer stackup
-- `test_symmetric_positions_calculation`: Test helper function directly with expected values
+#### Constants and Configuration
 
-**Test Results**: 93 tests passing (89 existing + 4 new)
+**New Constant**:
+- `MIN_FINAL_SEGMENT_MM = 5.0`: Minimum comfortable horizontal space after elbow
+
+**Why 5.0mm?**
+- Provides visual breathing room after the elbow
+- Roughly 1.67× the default text height (3.0mm)
+- Scales with overall scale parameter
+- Can be tuned based on testing results
+
+**Should It Be Configurable?**
+- **Decision**: No, keep as internal constant for now
+- **Reasoning**: User said "smart defaults, may add tuning later"
+- **Future**: Could expose as `min_final_horizontal_mm` config field if users request it
+
+### Implementation Plan
+
+#### Phase 1: Add Helper Function
+
+**Task 1.1**: Create `_calculate_required_leader_length()` function
+- **File**: `stackup/core/graphics_layout.py`
+- **Location**: Around line 520 (before `adjust_leader_lines`)
+- **Code**: See solution design above
+- **Testing**: Unit test with various vertical displacements
+
+**Task 1.2**: Add constant for minimum final segment
+- **Location**: Top of `graphics_layout.py` with other constants
+- **Code**: `MIN_FINAL_SEGMENT_MM = 5.0  # Minimum horizontal space after elbow`
+
+#### Phase 2: Modify `adjust_leader_lines()`
+
+**Task 2.1**: Add maximum leader length calculation
+- **Location**: Start of `adjust_leader_lines`, after docstring
+- **Logic**:
+  1. Extract stackup rectangle center Y
+  2. Scan all callouts
+  3. Calculate required length for each
+  4. Find maximum
+  5. Create `effective_config` with adjusted length
+
+**Task 2.2**: Update all `config` references to `effective_config`
+- **Locations**:
+  - Line ~551-573: Straight line creation
+  - Line ~574-609: Elbow line creation
+  - Line ~529: Collision detection call
+  - Any other dimensional calculations in the loop
+
+**Task 2.3**: Add debug logging
+- **Purpose**: Verify length extension is working
+- **Location**: After calculating `max_required_length`
+- **Temporary**: Can be removed after testing
+
+#### Phase 3: Update Unit Tests
+
+**Task 3.1**: Identify affected tests
+
+Run test suite to find tests that assert specific leader line coordinates:
+```bash
+pytest tests/test_graphics_layout.py -v
+```
+
+Expected affected tests (need coordinate updates):
+- Tests that verify exact leader line endpoint X positions
+- Tests that check specific callout text X coordinates
+- Tests that validate leader line segment positions
+
+**Task 3.2**: Update test assertions
+
+For each affected test:
+1. Understand what it's testing (behavior vs coordinates)
+2. If testing behavior (e.g., "center callout is straight"), keep test
+3. If testing coordinates, update to new expected values
+4. Document why coordinates changed in test comments
+
+**Task 3.3**: Add new test for aligned text column
+
+**New Test**: `test_aligned_text_column_with_large_displacements`
+
+```python
+def test_aligned_text_column_with_large_displacements():
+    """
+    Verify that all callout text aligns at the same X position when
+    callouts have varying vertical displacements.
+
+    This test ensures the dynamic leader length calculation works correctly
+    to create an aligned text column.
+    """
+    # Create stackup with many layers requiring large vertical displacements
+    stackup_data = StackupData(
+        layers=[
+            Layer(f"L{i}", LayerType.COPPER, thickness_um=35.0, tolerance_um=3.5)
+            for i in range(10)  # 10 copper layers
+        ],
+        total_thickness_mm=0.175
+    )
+
+    config = GraphicalStackupConfig(
+        scale_mm=100.0,
+        thickness_mode=ThicknessMode.UNIFORM,
+        uniform_layer_height_mm=3.0,
+        leader_line_length_mm=20.0,  # Base length
+        min_callout_spacing_mm=8.0,
+        visualization_style=VisualizationStyle.GRAPHICAL
+    )
+
+    layout, effective_config = calculate_graphical_layout(stackup_data, config)
+    layout = adjust_leader_lines(layout, effective_config)
+
+    # Extract all callout text X positions
+    text_x_positions = [callout.position_x for callout in layout.callouts]
+
+    # Verify all text aligns at the same X position (within floating point tolerance)
+    assert len(set(round(x, 6) for x in text_x_positions)) == 1, \
+        "All callout text should align at the same X position (aligned column)"
+
+    # Verify leader length was extended beyond base (due to large vertical displacements)
+    max_x = max(text_x_positions)
+    layer_edge_x = layout.elements[0].position_x + layout.elements[0].width / 2
+    actual_leader_length = max_x - layer_edge_x
+
+    assert actual_leader_length > config.leader_line_length_mm, \
+        f"Leader length should be extended beyond {config.leader_line_length_mm}mm base, " \
+        f"got {actual_leader_length:.1f}mm"
+```
+
+**Task 3.4**: Add test for minimum final segment
+
+```python
+def test_elbow_final_segment_minimum():
+    """
+    Verify that elbow leader lines maintain a minimum comfortable horizontal
+    segment after the 45° diagonal, even with large vertical displacements.
+    """
+    # Test with single callout requiring large vertical displacement
+    stackup_data = create_simple_stackup(num_layers=5)
+
+    config = GraphicalStackupConfig(
+        leader_line_length_mm=20.0,
+        min_elbow_height_mm=0.5
+    )
+
+    layout, effective_config = calculate_graphical_layout(stackup_data, config)
+    layout = adjust_leader_lines(layout, effective_config)
+
+    # Find callout with largest vertical displacement
+    rect_center_y = layout.elements[0].center_y
+    max_displacement_callout = max(
+        layout.callouts,
+        key=lambda c: abs(c.position_y - rect_center_y)
+    )
+
+    # Get its leader line
+    leader = next(l for l in layout.leader_lines if l.to_layer_name == max_displacement_callout.layer_name)
+
+    # For three-segment elbow line, last segment is final horizontal
+    if len(leader.segments) == 3:
+        final_segment = leader.segments[2]
+        final_horizontal_length = abs(final_segment.end_x - final_segment.start_x)
+
+        assert final_horizontal_length >= 5.0, \
+            f"Final horizontal segment should be at least 5.0mm, got {final_horizontal_length:.1f}mm"
+```
+
+#### Phase 4: Visual Verification
+
+**Task 4.1**: Generate test outputs with problematic stackup
+
+Using the user's problematic stackup (if available) or create similar dense stackup:
+
+```bash
+# Generate SVG exports at scale that showed the problem
+python3 -m stackup.cli.main --visualization graphical --scale 100 --export-svg before_fix.svg
+
+# After implementing fix:
+python3 -m stackup.cli.main --visualization graphical --scale 100 --export-svg after_fix.svg
+```
+
+**Task 4.2**: Manual inspection checklist
+
+For each generated SVG:
+- [ ] All callout text aligns vertically (same X position)
+- [ ] No horizontal crowding between elbows
+- [ ] Final horizontal segments after elbows are comfortable (visually ~5mm)
+- [ ] Text is readable and well-spaced
+- [ ] Symmetric layout is preserved
+- [ ] Overall appearance is professional
+
+**Task 4.3**: Measure actual dimensions
+
+Use SVG inspection tools to verify:
+- Text X positions (should be identical)
+- Leader line total lengths (should be consistent)
+- Final segment lengths (should be ≥ 5mm)
+- Spacing between elbow endpoints
+
+#### Phase 5: Edge Cases & Validation
+
+**Task 5.1**: Test with various stackup densities
+
+```bash
+# Sparse stackup (2-4 layers)
+python3 -m stackup.cli.main --visualization graphical --scale 100
+
+# Medium stackup (6-8 layers)
+python3 -m stackup.cli.main --visualization graphical --scale 100
+
+# Dense stackup (10+ layers)
+python3 -m stackup.cli.main --visualization graphical --scale 100
+```
+
+**Expected Behavior**:
+- Sparse: May not extend leader length (vertical displacements small)
+- Medium: Moderate extension
+- Dense: Significant extension to accommodate large displacements
+
+**Task 5.2**: Test with different thickness modes
+
+```bash
+# UNIFORM mode
+python3 -m stackup.cli.main --thickness-mode uniform --scale 100
+
+# PROPORTIONAL mode
+python3 -m stackup.cli.main --thickness-mode proportional --scale 100
+
+# SCALED mode
+python3 -m stackup.cli.main --thickness-mode scaled --scale 100
+```
+
+**Expected**: Feature should work identically across all modes
+
+**Task 5.3**: Test with different scales
+
+```bash
+# Small scale (where previous spacing issue occurred)
+python3 -m stackup.cli.main --scale 50
+
+# Medium scale
+python3 -m stackup.cli.main --scale 100
+
+# Large scale
+python3 -m stackup.cli.main --scale 200
+```
+
+**Expected**: Aligned column behavior should be consistent at all scales
+
+**Task 5.4**: Extreme edge case - Single layer
+
+```bash
+# Single copper layer stackup
+python3 -m stackup.cli.main --visualization graphical
+```
+
+**Expected**: Should handle gracefully (center callout straight, no extension needed)
+
+#### Phase 6: Performance & Correctness
+
+**Task 6.1**: Verify no performance regression
+
+The additional scan through callouts adds O(n) complexity, which is acceptable.
+
+**Benchmark**:
+```python
+import time
+
+# Test with dense stackup (worst case)
+stackup = create_stackup_with_n_layers(50)  # 50 layers
+config = GraphicalStackupConfig(scale_mm=100.0)
+
+start = time.time()
+layout = calculate_graphical_layout(stackup, config)
+layout = adjust_leader_lines(layout, config)
+end = time.time()
+
+print(f"Time for 50-layer stackup: {(end - start) * 1000:.2f}ms")
+```
+
+**Expected**: < 100ms even for 50 layers (scan is trivial compared to layout calculations)
+
+**Task 6.2**: Verify no memory leaks
+
+```python
+# Run layout calculation 1000 times
+for i in range(1000):
+    layout = calculate_graphical_layout(stackup_data, config)
+    layout = adjust_leader_lines(layout, config)
+
+# Check memory usage remains stable
+```
+
+**Task 6.3**: Verify thread safety (future consideration)
+
+Current implementation is stateless, so should be thread-safe.
+
+#### Phase 7: Documentation
+
+**Task 7.1**: Add inline code comments
+
+**Locations**:
+1. `_calculate_required_leader_length()`: Explain formula and reasoning
+2. `adjust_leader_lines()`: Explain maximum calculation logic
+3. `MIN_FINAL_SEGMENT_MM`: Explain why 5.0mm was chosen
+
+**Task 7.2**: Update function docstrings
+
+**`adjust_leader_lines()` docstring update**:
+```python
+def adjust_leader_lines(
+    layout: GraphicalStackupLayout, config: GraphicalStackupConfig
+) -> GraphicalStackupLayout:
+    """
+    Adjust leader lines to avoid overlapping callouts using symmetric spreading.
+
+    This function:
+    1. Calculates maximum required leader length based on all callout vertical
+       displacements to ensure aligned text column
+    2. Detects collisions between callouts (spacing < min_callout_spacing_mm)
+    3. Groups colliding callouts by proximity
+    4. Redistributes callouts symmetrically around center with minimum spacing
+    5. Recreates leader lines with adjusted positions (straight or 45° elbow)
+
+    The leader length calculation ensures all callout text aligns at the same
+    X position, creating a professional appearance and preventing horizontal
+    crowding of elbow endpoints.
+
+    Args:
+        layout: Initial graphical stackup layout with potential collisions
+        config: Configuration with spacing and dimension parameters
+
+    Returns:
+        Layout with adjusted leader lines ensuring minimum spacing and aligned text
+    """
+```
+
+**Task 7.3**: Update CLAUDE.md
+
+Add section under "Known Issues & Limitations":
+
+```markdown
+### Callout Horizontal Spacing (FIXED)
+
+**Previous Issue**: When many callouts required large vertical displacements (e.g., dense stackups with 10+ layers), the 45° elbows would bunch together horizontally because leader line length was fixed at 20mm.
+
+**Root Cause**: Fixed `leader_line_length_mm` meant that large diagonal segments consumed most of the horizontal budget, leaving little space for the final horizontal segment. This caused elbow endpoints to be very close horizontally (2-3mm), creating visual crowding.
+
+**Fix Applied**: Dynamic leader length calculation with aligned text column approach:
+- Scans all callout vertical displacements before creating leader lines
+- Calculates maximum required leader length to ensure comfortable final horizontal segment (5.0mm minimum)
+- Uses this maximum length uniformly for all callouts
+- Result: All text aligns at the same X position, professional appearance, no horizontal crowding
+
+**See also**:
+- `stackup/core/graphics_layout.py:_calculate_required_leader_length()` for calculation logic
+- `stackup/core/graphics_layout.py:adjust_leader_lines()` for implementation
+```
+
+Add section under "Architecture Overview":
+
+```markdown
+### Aligned Text Column Feature
+
+When multiple callouts have varying vertical displacements, the plugin automatically calculates the appropriate leader line length to create an aligned text column. This prevents horizontal crowding of 45° elbows while maintaining a professional, organized appearance.
+
+**How It Works**:
+1. Before adjusting leader lines, scan all callout positions
+2. For each callout, calculate required leader length based on vertical displacement
+3. Find maximum required length across all callouts
+4. Use this maximum uniformly for all callouts
+5. Result: Text aligns at consistent X position
+
+**Configuration**: No user-facing parameters needed (smart defaults). The base `leader_line_length_mm` (20.0mm default) serves as the minimum; actual length extends as needed.
+```
+
+**Task 7.4**: Update plan.md (this file)
+
+Mark task as complete and move to archived section.
+
+### Testing Strategy
+
+#### Unit Tests
+
+**Existing Tests to Verify** (should still pass):
+```python
+# Symmetric spacing tests
+test_symmetric_spacing_odd_layers_five()
+test_symmetric_spacing_even_layers_six()
+test_symmetric_spacing_center_is_straight()
+test_symmetric_spacing_mirrors()
+
+# Leader line tests (may need coordinate updates)
+test_create_straight_leader_line()
+test_create_elbow_leader_line_up()
+test_create_elbow_leader_line_down()
+
+# Layout tests
+test_graphical_layout_basic_structure()
+test_leader_line_adjustment()
+```
+
+**New Tests to Add**:
+```python
+# Aligned column feature
+test_aligned_text_column_with_large_displacements()
+test_elbow_final_segment_minimum()
+test_calculate_required_leader_length_straight()
+test_calculate_required_leader_length_elbow()
+test_leader_length_extension_with_dense_stackup()
+
+# Edge cases
+test_aligned_column_single_layer()
+test_aligned_column_sparse_stackup()
+test_aligned_column_all_thickness_modes()
+test_aligned_column_various_scales()
+```
+
+#### Integration Tests
+
+Manual CLI testing with various configurations:
+
+```bash
+# Dense stackup at scale that triggered issue
+pytest tests/test_integration.py::test_dense_stackup_graphical
+
+# All thickness modes with dense stackup
+pytest tests/test_integration.py -k "thickness_mode and dense"
+
+# SVG export verification
+pytest tests/test_integration.py::test_svg_export_aligned_column
+```
+
+#### Visual Tests
+
+**Checklist for Manual Inspection**:
+
+For each generated SVG:
+- [ ] Text alignment: All callout labels at same X coordinate
+- [ ] Horizontal spacing: No crowding between elbow endpoints
+- [ ] Final segments: Comfortable space (≥5mm) after each elbow
+- [ ] Symmetry: Layout remains symmetric around center
+- [ ] Readability: Text is clear and well-spaced
+- [ ] Professional appearance: Clean, organized look
+
+**Test Configurations**:
+1. Dense 10-layer stackup at 100mm scale
+2. Dense 10-layer stackup at 50mm scale (previously problematic)
+3. Sparse 4-layer stackup at 100mm scale
+4. Mixed copper/dielectric with soldermask at 150mm scale
+
+### Success Criteria
+
+✅ **Aligned Text Column**: All callout text aligns at the same X position
+
+✅ **No Horizontal Crowding**: Elbow endpoints have comfortable horizontal spacing
+
+✅ **Minimum Final Segment**: All elbow lines have ≥5mm final horizontal segment
+
+✅ **No Regressions**: All existing unit tests pass (after coordinate updates)
+
+✅ **Scale Invariant**: Feature works consistently at all scales (50mm to 200mm)
+
+✅ **Mode Independent**: Works identically across UNIFORM, PROPORTIONAL, and SCALED thickness modes
+
+✅ **Visual Quality**: Professional, organized appearance in generated SVGs
+
+✅ **Performance**: No significant performance impact (< 10% overhead)
+
+✅ **Documented**: Code comments, docstrings, and CLAUDE.md updated
+
+### Rollback Plan
+
+If critical issues arise:
+
+1. **Immediate Rollback**:
+   - Revert `adjust_leader_lines()` changes
+   - Remove `_calculate_required_leader_length()` function
+   - Restore original fixed `leader_line_length_mm` behavior
+
+2. **Partial Rollback**:
+   - Keep helper function for future use
+   - Add configuration flag: `enable_aligned_column: bool = False`
+   - Gate the feature behind flag for testing
+
+3. **Alternative Approach**:
+   - If aligned column doesn't work well, try "minimum gap" approach instead
+   - Implement horizontal spacing enforcement between elbow endpoints
+   - More complex but may handle edge cases better
+
+### Future Enhancements (Out of Scope)
+
+**Possible Future Features**:
+1. **User-configurable alignment**:
+   - Config option: `text_alignment: Literal["left", "aligned", "justified"]`
+   - "left" = current behavior, "aligned" = this feature, "justified" = distribute evenly
+
+2. **Adaptive final segment**:
+   - Scale final segment with text size
+   - Formula: `min_final_segment = text_size_mm * 1.67`
+
+3. **Smart wrapping**:
+   - For extremely dense stackups, wrap to multiple columns
+   - Left side and right side callouts
+
+4. **Variable elbow angles**:
+   - Support angles other than 45° (e.g., 30°, 60°)
+   - Could save horizontal space or improve aesthetics
+
+---
+
+## Archived: Text Spacing at Small Scales Fix (✅ COMPLETE)
+
+### Overview
+Fixed critical bug where callout spacing algorithm used wrong measurement value (`min_elbow_height_mm` = 0.3mm instead of `min_callout_spacing_mm` = 4.0mm), causing severe text overlaps at small scales.
+
+### Solution
+Changed `_calculate_symmetric_positions()` in `stackup/core/graphics_layout.py:463` to use `config.min_callout_spacing_mm` as the spacing unit instead of `config.min_elbow_height_mm`.
+
+### Results
+- ✅ All 111 unit tests pass
+- ✅ Zero spacing violations at 50mm scale (verified with diagnostics)
+- ✅ Text spacing now scale-invariant
+- ✅ Guaranteed to meet minimum spacing thresholds
 
 ### Files Modified
+- `stackup/core/graphics_layout.py`: Line 463 spacing unit fix
+- `stackup/core/diagnostics.py`: Added diagnostic utilities
+- `tests/test_graphics_layout.py`: Updated test cases
 
-1. ✅ `stackup/core/graphics_layout.py`:
-   - Added `_calculate_symmetric_positions()` helper function (lines 331-389)
-   - Updated `adjust_leader_lines()` to use symmetric positioning
-   - Removed old linear distribution code (lines 431-451, now replaced)
-   - Simplified logic by removing redundant spacing adjustment
+---
 
-2. ✅ `tests/test_graphics_layout.py`:
-   - Added `TestSymmetricElbowSpacing` class with 4 comprehensive tests
-   - Tests verify center is straight, symmetry, and mirroring
+## Archived: Scale Feature Implementation Plan (✅ COMPLETE)
 
-3. ✅ `plan.md`:
-   - Documented symmetric spacing algorithm
+### Overview
+Add a scale parameter to control the overall size of generated cross-section drawings. The scale is specified as the desired **total height** in mm, and all dimensions scale proportionally to maintain aspect ratio.
 
-### Benefits
+### Design Goals
+- **User-friendly**: Specify desired height in mm (e.g., `--scale 150` = 150mm tall cross-section)
+- **Maintains aspect ratio**: Width, text size, line widths, and all other dimensions scale proportionally
+- **GUI-ready**: Configuration field that can be easily exposed in a future GUI dialog
+- **Mode-specific**: Applies to graphical mode only (cross-section drawings)
 
-1. **Visual balance**: Symmetric appearance looks professional and intentional
-2. **Center emphasis**: Straight center line creates natural visual anchor point
-3. **Predictable**: Always know center will be straight, others will mirror
-4. **Simpler code**: Removed complexity of spacing adjustment - built-in by design
-5. **Mathematical elegance**: Clean formula: `displacement = (i - center) * unit`
-6. **PCB-appropriate**: Matches typical PCB structure (center ground plane, symmetric copper layers)
+### Architecture Overview
 
-### Constants Summary (Updated)
+#### Current Dimension Flow
+```
+CLI args → GraphicalStackupConfig → graphics_layout.py → graphics_renderer.py
+```
 
-| Constant | Value | Purpose |
-|----------|-------|---------|
-| `MIN_ELBOW_HEIGHT_MM` | 0.5mm | Minimum vertical displacement for elbows (smaller = straight line) |
-| `MIN_CALLOUT_SPACING_MM` | 8.8mm | Minimum vertical spacing between callouts |
-| `CALLOUT_TEXT_PADDING_MM` | 1.0mm | Horizontal padding from leader to text |
-| `DEFAULT_BASE_HEIGHT_MM` | 3.0mm | Base height for proportional mode |
+#### Where Dimensions Are Defined
+- **Config**: `GraphicalStackupConfig` in `stackup/core/graphics_models.py`
+  - `uniform_layer_height_mm = 3.0` (base layer height)
+  - `layer_width_mm = 50.0` (stackup rectangle width)
+  - `max_total_height_mm = 100.0` (max height for SCALED thickness mode)
+  - `leader_line_length_mm = 15.0`
+  - `callout_text_size_mm = 3.0`
+  - `soldermask_gap_mm = 0.3`
+  - `copper_hatch_spacing_mm = 2.0`
 
-## Conclusion
+- **Layout**: `graphics_layout.py` calculates actual dimensions based on config
+  - `_calculate_layer_heights()` determines individual layer heights
+  - `calculate_graphical_layout()` computes total layout dimensions
 
-All visual enhancement features have been successfully implemented and tested. The plugin now provides:
+### Implementation Details
 
-1. **Three thickness modes** (uniform, proportional, scaled) for layer visualization
-2. **Soldermask gap spacing** for visual layer separation
-3. **Copper layer hatching** with 45-degree diagonal lines
-4. **Intelligent elbow generation** that automatically creates professional-looking leader lines by avoiding tiny elbows (< 0.5mm)
-5. **Symmetric elbow spacing** that creates balanced, visually appealing layouts with center layer always straight
+#### Config Updates
+- Added field: `scale_mm: Optional[float] = None`
+- Minimum floors applied to spacing parameters when scaling:
+  - `min_callout_spacing_mm`: floor of 4.0mm
+  - `min_elbow_height_mm`: floor of 0.3mm
 
-The implementation uses constants instead of magic numbers, maintains copper as a 1.0 baseline for intuitive ratios, follows the existing architecture, maintains backward compatibility, and includes comprehensive unit test coverage (93 tests passing).
+#### Layout Logic
+- Two-pass calculation:
+  1. Calculate with default dimensions to determine base height
+  2. If `scale_mm` specified, apply scale factor and recalculate
+- Helper function `_scale_config()` multiplies all dimension fields by scale factor
 
-**Status**: ✅ Complete and ready for testing with live KiCad instance
+#### CLI Support
+- Added `--scale MM` argument to specify desired height in mm
+- Works with all thickness modes (UNIFORM, PROPORTIONAL, SCALED)
+- Works with SVG export
 
-**Latest Enhancements** (December 2024):
-- Intelligent elbow generation - No more silly-looking tiny elbows!
-- Symmetric spacing from center layer - Professional, balanced appearance!
+#### Testing
+- Comprehensive test suite covers scaling at various values
+- Tests verify:
+  - Exact height matching
+  - Aspect ratio preservation
+  - Element count preservation
+  - Origin position preservation
+  - Interaction with all thickness modes and features

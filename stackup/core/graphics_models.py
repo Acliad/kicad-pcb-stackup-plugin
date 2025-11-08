@@ -21,7 +21,7 @@ DEFAULT_BASE_HEIGHT_MM = 3.0
 CALLOUT_TEXT_PADDING_MM = 1.0
 
 # Minimum vertical spacing between callout text labels (in mm)
-MIN_CALLOUT_SPACING_MM = 8.8  # 10% more than original 8.0mm
+MIN_CALLOUT_SPACING_MM = 2.0  # Compact spacing for professional appearance
 
 # Minimum vertical displacement for elbows (smaller = straight line)
 MIN_ELBOW_HEIGHT_MM = 0.5  # Elbows with less than 0.5mm vertical displacement become straight lines
@@ -97,6 +97,9 @@ class StackupVisualization:
 @dataclass
 class GraphicalStackupConfig:
     """Configuration for graphical stackup rendering"""
+    # Overall scaling
+    scale_mm: Optional[float] = None  # Desired total height of cross-section in mm. If None, uses default dimensions. All dimensions scale proportionally to achieve this height while maintaining aspect ratio.
+
     # Layer sizing
     thickness_mode: ThicknessMode = ThicknessMode.PROPORTIONAL  # How to calculate layer heights
     uniform_layer_height_mm: float = DEFAULT_BASE_HEIGHT_MM  # Base height (uniform mode or proportional base)
@@ -120,6 +123,7 @@ class GraphicalStackupConfig:
     # Leader lines
     leader_line_length_mm: float = 20.0  # Length of horizontal leader segment
     leader_line_width_mm: float = 0.15  # Line thickness
+    leader_direction: str = "auto"  # Direction for leader lines: "auto" (dynamic), "outward", or "inward"
 
     # Callout text
     callout_format: str = "{material} - {thickness} ±{tolerance}"
